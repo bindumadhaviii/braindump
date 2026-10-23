@@ -10,7 +10,7 @@ import { generateTemplate } from "./templates.ts";
 import { importSeedIfEmpty } from "./seed.ts";
 import { fetchPreview } from "./links.ts";
 import { extractUrls } from "../shared/rules.ts";
-import { isRecallQuery, recallTerms, searchPhotos } from "../shared/recall.ts";
+import { isRecallQuery, photoName, recallTerms, searchPhotos, todoFromPhoto, wantsNote, wantsTodo } from "../shared/recall.ts";
 import { CATEGORY_IDS } from "../shared/categories.ts";
 
 importSeedIfEmpty(); // a fresh clone starts with the sample data in seed/
@@ -42,6 +42,22 @@ app.get("/api/events", (req, res) => {
   });
 });
 
+/** Copies a photo from the library into the log as a new message, with the text read from it. */
+function photoMessage(photo: db.Photo): db.Message {
+  const storedName = db.newId() + ".jpg";
+  fs.copyFileSync(path.join(db.THUMB_DIR, path.basename(photo.url)), db.storedPath(storedName));
+  return db.insertMessage("", [
+    {
+      kind: "image",
+      filename: path.basename(photo.path),
+      mime: "image/jpeg",
+      size: fs.statSync(db.storedPath(storedName)).size,
+      storedName,
+      transcript: photo.text.trim() || null,
+    },
+  ]);
+}
+
 // ---------- Organizing pipeline ----------
 async function organize(id: string) {
   try {
@@ -54,8 +70,21 @@ async function organize(id: string) {
       // "Can you find that screenshot…": answer from the photo library instead of filing it as a note.
       const terms = recallTerms(asked);
       const photos = db.listPhotos();
-      db.saveRecall(id, terms, searchPhotos(photos, terms).map((m) => m.photo.id), photos.length);
-      db.replaceItems(id, []);
+      const found = searchPhotos(photos, terms);
+      db.saveRecall(id, terms, found.map((m) => m.photo.id), photos.length);
+      // "…and make a to-do with the day and time": file the best match as a to-do on this message.
+      const todo = wantsTodo(asked) && found.length ? todoFromPhoto(found[0].photo, asked, terms) : null;
+      db.replaceItems(id, todo ? [{ category: "todo", topic: null, title: todo.title, body: todo.body, attachment_id: null, link_id: null }] : []);
+      // "…and add it to my notes": save the best match into the log as one note (not re-sorted, so its times don't
+      // turn into extra to-dos next to the one above).
+      if (wantsNote(asked) && found.length) {
+        const best = found[0].photo;
+        const saved = photoMessage(best);
+        const title = photoName(best, asked, terms);
+        db.replaceItems(saved.id, [{ category: "note", topic: null, title, body: best.text, attachment_id: saved.attachments[0].id, link_id: null }]);
+        db.setStatus(saved.id, "done");
+        pushMessage(saved.id);
+      }
     } else {
       db.replaceLinks(id, await Promise.all(extractUrls(msg.text).map(fetchPreview)));
       pushMessage(id); // show link previews as soon as they're ready
@@ -196,18 +225,7 @@ app.delete("/api/photos", (req, res) => {
 app.post("/api/photos/:id/save", (req, res) => {
   const photo = db.getPhoto(req.params.id);
   if (!photo) return res.sendStatus(404);
-  const storedName = db.newId() + ".jpg";
-  fs.copyFileSync(path.join(db.THUMB_DIR, path.basename(photo.url)), db.storedPath(storedName));
-  const message = db.insertMessage("", [
-    {
-      kind: "image",
-      filename: path.basename(photo.path),
-      mime: "image/jpeg",
-      size: fs.statSync(db.storedPath(storedName)).size,
-      storedName,
-      transcript: photo.text.trim() || null,
-    },
-  ]);
+  const message = photoMessage(photo);
   res.status(201).json(message);
   broadcast({ type: "message", message });
   organize(message.id);

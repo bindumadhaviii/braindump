@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { api, type Message, type Photo, type Recall } from "../api.ts";
+import { api, type Item, type Message, type Photo, type Recall } from "../api.ts";
 import { CATEGORIES } from "../../shared/categories.ts";
 import { dayKey, formatDay, formatTime, groupBy } from "../format.ts";
 import { AttachmentView, LinkCard, Linkified } from "./Media.tsx";
@@ -129,7 +129,9 @@ function Bubble({ m, onJumpToItem, onOpenPhotos }: BubbleProps) {
           <LinkCard key={l.id} link={l} compact />
         ))}
       </div>
-      {m.recall && <RecallCard recall={m.recall} onOpenPhotos={onOpenPhotos} />}
+      {m.recall && (
+        <RecallCard recall={m.recall} todo={m.items.find((i) => i.category === "todo")} onOpenPhotos={onOpenPhotos} onJumpToItem={onJumpToItem} />
+      )}
       <div className="msg-meta">
         {/* Delete/re-organize need the server (and confirm() doesn't work inside a shared Artifact). */}
         {!api.demo && <MessageMenu m={m} />}
@@ -140,8 +142,10 @@ function Bubble({ m, onJumpToItem, onOpenPhotos }: BubbleProps) {
   );
 }
 
-/** BrainDump's answer to "find that screenshot…": the matching photos and what's in them. */
-function RecallCard({ recall, onOpenPhotos }: { recall: Recall; onOpenPhotos: () => void }) {
+type RecallCardProps = { recall: Recall; todo?: Item; onOpenPhotos: () => void; onJumpToItem: (itemId: string) => void };
+
+/** BrainDump's answer to "find that screenshot…": the matching photos and what's in them, and any to-do made from them. */
+function RecallCard({ recall, todo, onOpenPhotos, onJumpToItem }: RecallCardProps) {
   const { terms, photos, searched } = recall;
   const quoted = terms.map((t) => `“${t}”`).join(", ");
   let note: ReactNode = null;
@@ -160,6 +164,12 @@ function RecallCard({ recall, onOpenPhotos }: { recall: Recall; onOpenPhotos: ()
   return (
     <div className="recall">
       <div className="recall-head">🔎 {note ?? `Found ${photos.length} ${photos.length === 1 ? "photo" : "photos"} for ${quoted}`}</div>
+      {todo && (
+        <button className="recall-todo" onClick={() => onJumpToItem(todo.id)} title="Show in Docs">
+          ✅ Added to your to-dos: <strong>{todo.title}</strong>
+          {todo.body && <small>{todo.body}</small>}
+        </button>
+      )}
       {photos.length > 0 && (
         <div className="recall-grid">
           {photos.map((p) => (
