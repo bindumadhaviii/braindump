@@ -144,6 +144,10 @@ button.tag:hover, a.tag:hover { filter: brightness(0.96); }
 .composer textarea::placeholder { color: var(--muted); }
 .icon-btn { border: 0; background: none; width: 34px; height: 34px; border-radius: var(--radius); display: grid; place-items: center; color: var(--ink-2); flex-shrink: 0; }
 .icon-btn:hover { background: var(--bg-hover); color: var(--ink); }
+.icon-btn:disabled { opacity: 0.35; cursor: default; background: none; }
+.icon-btn.listening { color: #d44c47; background: rgba(212, 76, 71, 0.1); animation: listen 1.4s ease-in-out infinite; }
+@keyframes listen { 0%, 100% { box-shadow: 0 0 0 0 rgba(212, 76, 71, 0.25); } 50% { box-shadow: 0 0 0 5px rgba(212, 76, 71, 0); } }
+.composer-hint { color: var(--muted); font-size: 12.5px; margin: 6px 8px 0; }
 .send-btn { border: 0; width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--ink); color: var(--bg); flex-shrink: 0; transition: opacity 0.15s; }
 .send-btn:disabled { opacity: 0.2; cursor: default; }
 .composer-error { color: #d44c47; font-size: 12.5px; margin: 6px 8px 0; }
@@ -444,5 +448,5 @@ button.tag:hover, a.tag:hover { filter: brightness(0.96); }
   .msg-menu { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .flash, .status.pending, .j-pending, .rec-dot { animation: none; }
+  .flash, .status.pending, .j-pending, .rec-dot, .icon-btn.listening { animation: none; }
 }
