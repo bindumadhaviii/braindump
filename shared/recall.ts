@@ -25,7 +25,13 @@ const STOP = new Set(
 // Related words, so "exercise" also finds a screenshot that only says "squats". A small hand-made start: the
 // WordNet-based keyword lists can replace these groups.
 const RELATED: string[][] = [
-  ["exercise", "workout", "gym", "fitness", "training", "reps", "sets", "squat", "lunge", "deadlift"],
+  ["exercise", "workout", "gym", "fitness", "training", "reps", "sets", "squat", "lunge", "deadlift", "burpee", "bodyweight", "plank"],
+  ["job", "career", "resume", "interview", "hiring", "apply", "linkedin", "indeed", "recruiter"],
+  ["birthday", "reward", "coupon", "discount", "deal", "freebie", "offer", "loyalty"],
+  ["netflix", "series", "show", "watch", "tv", "movie"],
+  ["english", "vocabulary", "accent", "speaking", "language", "conversation"],
+  ["thriller", "mystery", "bestselling", "novel", "author"],
+  ["fryer", "appliance", "kitchen", "seller", "sale", "obo"],
   ["leg", "squat", "lunge", "glute", "quad", "hamstring", "calf"],
   ["rep", "set"],
   ["travel", "trip", "flight", "hotel", "itinerary", "booking", "vacation", "visit"],
@@ -119,12 +125,12 @@ export function photoName(photo: Photo, asked: string, terms: string[]): string 
   if (best.length >= 2) return tidy(best.join(" "));
 
   // One matching word ("meetup") makes a poor name; the photo's title line is better. Skip the status bar, date and
-  // time lines, and labels like "Events" or "My tickets".
+  // time lines, labels like "Events" or "My tickets", and OCR specks like "SRR INR La," (no real word in them).
   const title = photo.text
     .split("\n")
     .find(
       (l) =>
-        /\p{L}{3}/u.test(l) &&
+        /\p{Lu}?\p{Ll}{3,}/u.test(l) &&
         !/^\d{1,2}:\d{2}\b/.test(l) &&
         !DATE_RE.test(l) &&
         !CLOCK_RE.test(l) &&
@@ -133,9 +139,20 @@ export function photoName(photo: Photo, asked: string, terms: string[]): string 
   return tidy(title ?? (best.join(" ") || photo.path));
 }
 
-/** A to-do from the photo: "Go to Golden Gate Music Festival — Saturday, Nov 14, 7:30 PM", other times in the body. */
+/** What the user asked to be reminded to do: "remind me to message the seller" → "message the seller". */
+function askedAction(asked: string): string | null {
+  const m = asked.match(/\bremind me to ([^.?!,]+)/i) ?? asked.match(/\b(?:to-?do|task|reminder) to ([^.?!,]+)/i);
+  const action = m?.[1].trim().replace(/\s+(?:about|for|with) (?:it|this|that)$/i, "");
+  return action && !/^(?:go|attend|be there|go there)$/i.test(action) ? action : null;
+}
+
+/**
+ * A to-do from the photo: "Go to Golden Gate Music Festival — Saturday, Nov 14, 7:30 PM", or the user's own action
+ * ("Message the seller — Air Fryer"). Other times and prices from the photo go in the body.
+ */
 export function todoFromPhoto(photo: Photo, asked: string, terms: string[]): { title: string; body: string } {
   const name = photoName(photo, asked, terms);
+  const action = askedAction(asked);
   const lines = photo.text.split("\n");
   const dateLine = lines.find((l) => DATE_RE.test(l)) ?? lines.find((l) => WEEKDAY_RE.test(l));
   const date = dateLine ? tidy((dateLine.match(DATE_RE) ?? dateLine.match(WEEKDAY_RE))![0]) : null;
@@ -143,9 +160,14 @@ export function todoFromPhoto(photo: Photo, asked: string, terms: string[]): { t
   const timeLine = (dateLine && CLOCK_RE.test(dateLine) ? dateLine : lines.find((l) => CLOCK_RE.test(l))) ?? null;
   const time = timeLine ? timeLine.match(CLOCK_RE)![0].toUpperCase() : null;
   const when = [date, time].filter(Boolean).join(", ");
-  const extra = lines.filter((l) => l !== timeLine && CLOCK_RE.test(l)).slice(0, 3); // "Gates open 6:00 PM"
+  const extra = lines.filter((l) => l !== timeLine && (CLOCK_RE.test(l) || /\$\d/.test(l))).slice(0, 3); // "Gates open 6:00 PM", "$45 OBO"
+  const title = action
+    ? `${action.charAt(0).toUpperCase()}${action.slice(1)} — ${name}${when ? ` (${when})` : ""}`
+    : when
+      ? `Go to ${name} — ${when}`
+      : name;
   return {
-    title: when ? `Go to ${name} — ${when}` : name,
+    title,
     body: [...extra, `From your screenshot ${photo.path}`].join(" · "),
   };
 }
@@ -160,22 +182,26 @@ export function searchPhotos(photos: Photo[], terms: string[], limit = 6): Match
   if (!terms.length || !photos.length) return [];
   const docs = photos.map((p) => {
     const ws = words(`${p.text} ${p.path.replace(/[\\/_.-]+/g, " ")}`).map(stem);
-    return { photo: p, set: new Set(ws), joined: ` ${ws.join(" ")} ` };
+    // OCR often glues stylised words together ("Reverselunge30x"); long tokens are also searched inside.
+    const glued = ws.filter((w) => w.length >= 9);
+    return { photo: p, set: new Set(ws), glued, joined: ` ${ws.join(" ")} ` };
   });
-  const idf = (w: string) => Math.log(1 + docs.length / (1 + docs.filter((d) => d.set.has(w)).length));
-  // A related word backs up a photo that already matches another term exactly, or stands in for a term no photo
-  // contains. On its own it's noise: if one photo says "hackathon", another that only says "pitch" isn't a match.
-  const exact = new Set(terms.filter((t) => docs.some((d) => d.set.has(t))));
+  /** 1 for the word itself, 0.5 for a word of 5+ letters found inside a glued token, else 0. */
+  const has = (d: (typeof docs)[number], w: string) => (d.set.has(w) ? 1 : w.length >= 5 && d.glued.some((g) => g.includes(w)) ? 0.5 : 0);
+  const idf = (w: string) => Math.log(1 + docs.length / (1 + docs.filter((d) => has(d, w)).length));
+  // A related word backs up a photo that already matches another term, or stands in for a term no photo contains.
+  // On its own it's noise: if one photo says "hackathon", another that only says "pitch" isn't a match.
+  const exact = new Set(terms.filter((t) => docs.some((d) => has(d, t))));
 
   const matches: Match[] = [];
   for (const d of docs) {
     let score = 0;
-    const matchesExactly = terms.some((t) => d.set.has(t));
+    const matchesATerm = terms.some((t) => has(d, t));
     for (const t of terms) {
-      if (d.set.has(t)) score += idf(t);
-      else if (matchesExactly || !exact.has(t)) {
-        const rel = [...(relatedTo.get(t) ?? [])].find((r) => d.set.has(r));
-        if (rel) score += 0.5 * idf(rel);
+      if (has(d, t)) score += has(d, t) * idf(t);
+      else if (matchesATerm || !exact.has(t)) {
+        const rel = [...(relatedTo.get(t) ?? [])].find((r) => has(d, r));
+        if (rel) score += 0.5 * has(d, rel) * idf(rel);
       }
     }
     for (let i = 1; i < terms.length; i++) if (d.joined.includes(` ${terms[i - 1]} ${terms[i]} `)) score += 1;

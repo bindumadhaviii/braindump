@@ -81,7 +81,8 @@ async function organize(id: string) {
         const best = found[0].photo;
         const saved = photoMessage(best);
         const title = photoName(best, asked, terms);
-        db.replaceItems(saved.id, [{ category: "note", topic: null, title, body: best.text, attachment_id: saved.attachments[0].id, link_id: null }]);
+        const body = best.text.split("\n").filter((l) => /\p{Ll}{3,}/u.test(l)).join("\n"); // drop OCR specks like "SRR INR La,"
+        db.replaceItems(saved.id, [{ category: "note", topic: null, title, body, attachment_id: saved.attachments[0].id, link_id: null }]);
         db.setStatus(saved.id, "done");
         pushMessage(saved.id);
       }
