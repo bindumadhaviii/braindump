@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, type Message } from "../api.ts";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { api, type Message, type Photo, type Recall } from "../api.ts";
 import { CATEGORIES } from "../../shared/categories.ts";
 import { dayKey, formatDay, formatTime, groupBy } from "../format.ts";
 import { AttachmentView, LinkCard, Linkified } from "./Media.tsx";
 import { Composer } from "./Composer.tsx";
+import { PhotoAccessDialog, usePhotoLibrary } from "./PhotoAccess.tsx";
 import { COVERS } from "../covers.ts";
 
 type Props = {
@@ -16,6 +17,9 @@ export function Chat({ messages, onJumpToItem }: Props) {
   const stickToBottom = useRef(true);
   const [dragging, setDragging] = useState(false);
   const [dropped, setDropped] = useState<File[]>([]);
+  const library = usePhotoLibrary();
+  const [photosOpen, setPhotosOpen] = useState(false);
+  const openPhotos = () => setPhotosOpen(true);
 
   // Keep the view pinned to the newest message unless the user scrolled up to read history.
   const pinToBottom = () => {
@@ -53,7 +57,14 @@ export function Chat({ messages, onJumpToItem }: Props) {
           <span className="brand-mark">🧠</span>
           <span>BrainDump</span>
         </div>
-        <span className="chat-count">{messages.length} {messages.length === 1 ? "message" : "messages"}</span>
+        <span className="chat-header-right">
+          {!api.demo && (
+            <button className="photos-btn" onClick={openPhotos} title="Let BrainDump look through your photos">
+              🖼️ {library.scan ? (library.scan.total ? `Reading ${library.scan.done}/${library.scan.total}` : "Looking…") : "Photos"}
+            </button>
+          )}
+          <span className="chat-count">{messages.length} {messages.length === 1 ? "message" : "messages"}</span>
+        </span>
       </header>
 
       <div
@@ -81,7 +92,7 @@ export function Chat({ messages, onJumpToItem }: Props) {
                 </span>
               </div>
               {msgs.map((m) => (
-                <Bubble key={m.id} m={m} onJumpToItem={onJumpToItem} />
+                <Bubble key={m.id} m={m} onJumpToItem={onJumpToItem} onOpenPhotos={openPhotos} />
               ))}
             </div>
           );
@@ -90,11 +101,14 @@ export function Chat({ messages, onJumpToItem }: Props) {
 
       <Composer dropped={dropped} onDroppedConsumed={() => setDropped([])} />
       {dragging && <div className="drop-overlay">Drop to add</div>}
+      {photosOpen && <PhotoAccessDialog library={library} onClose={() => setPhotosOpen(false)} />}
     </section>
   );
 }
 
-function Bubble({ m, onJumpToItem }: { m: Message; onJumpToItem: (itemId: string) => void }) {
+type BubbleProps = { m: Message; onJumpToItem: (itemId: string) => void; onOpenPhotos: () => void };
+
+function Bubble({ m, onJumpToItem, onOpenPhotos }: BubbleProps) {
   // Links without a fetched preview yet are still shown inline in the text.
   return (
     <div className="msg" id={`msg-${m.id}`}>
@@ -115,6 +129,7 @@ function Bubble({ m, onJumpToItem }: { m: Message; onJumpToItem: (itemId: string
           <LinkCard key={l.id} link={l} compact />
         ))}
       </div>
+      {m.recall && <RecallCard recall={m.recall} onOpenPhotos={onOpenPhotos} />}
       <div className="msg-meta">
         {/* Delete/re-organize need the server (and confirm() doesn't work inside a shared Artifact). */}
         {!api.demo && <MessageMenu m={m} />}
@@ -122,6 +137,78 @@ function Bubble({ m, onJumpToItem }: { m: Message; onJumpToItem: (itemId: string
         <time dateTime={new Date(m.created_at).toISOString()}>{formatTime(m.created_at)}</time>
       </div>
     </div>
+  );
+}
+
+/** BrainDump's answer to "find that screenshot…": the matching photos and what's in them. */
+function RecallCard({ recall, onOpenPhotos }: { recall: Recall; onOpenPhotos: () => void }) {
+  const { terms, photos, searched } = recall;
+  const quoted = terms.map((t) => `“${t}”`).join(", ");
+  let note: ReactNode = null;
+  if (searched === 0)
+    note = (
+      <>
+        BrainDump can't see any photos yet.{" "}
+        <button className="link-btn" onClick={onOpenPhotos}>
+          Give photo access
+        </button>
+      </>
+    );
+  else if (!terms.length) note = "Tell me a word or two that's in the photo, like “leg day” or “hackathon”.";
+  else if (!photos.length) note = `No photo matched ${quoted}. Searched ${searched} ${searched === 1 ? "photo" : "photos"}.`;
+
+  return (
+    <div className="recall">
+      <div className="recall-head">🔎 {note ?? `Found ${photos.length} ${photos.length === 1 ? "photo" : "photos"} for ${quoted}`}</div>
+      {photos.length > 0 && (
+        <div className="recall-grid">
+          {photos.map((p) => (
+            <RecallPhoto key={p.id} photo={p} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecallPhoto({ photo }: { photo: Photo }) {
+  const [saved, setSaved] = useState<"no" | "saving" | "yes">("no");
+  const when = photo.taken_at ? new Date(photo.taken_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : null;
+  return (
+    <figure className="recall-photo">
+      <a href={photo.url} target="_blank" rel="noreferrer">
+        <img src={photo.url} alt={photo.path} loading="lazy" />
+      </a>
+      <figcaption>
+        <span className="recall-path" title={`${photo.folder}/${photo.path}`}>
+          {photo.path.split("/").pop()}
+          {when && ` · ${when}`}
+        </span>
+        {photo.text ? (
+          <details>
+            <summary>What's in it</summary>
+            <p>{photo.text}</p>
+          </details>
+        ) : (
+          <span className="recall-notext">No text found in this photo</span>
+        )}
+        <button
+          className="link-btn"
+          disabled={saved !== "no"}
+          onClick={async () => {
+            setSaved("saving");
+            try {
+              await api.photos.save(photo.id);
+              setSaved("yes");
+            } catch {
+              setSaved("no");
+            }
+          }}
+        >
+          {saved === "yes" ? "✓ Saved to notes" : saved === "saving" ? "Saving…" : "Save to my notes"}
+        </button>
+      </figcaption>
+    </figure>
   );
 }
 

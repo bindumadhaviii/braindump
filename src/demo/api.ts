@@ -6,7 +6,7 @@ import type { Pending, ServerEvent } from "../api.ts";
 import { classifyWithRules, extractUrls } from "../../shared/rules.ts";
 import { templateFromKeywords, type Template } from "../../shared/templates.ts";
 
-export type { Message, Item, Attachment, Link, Pending, ServerEvent, Template, TemplateSpec } from "../api.ts";
+export type { Message, Item, Attachment, Link, Photo, Recall, Pending, PhotoMeta, ServerEvent, Template, TemplateSpec } from "../api.ts";
 
 declare const __SNAPSHOT__: Message[];
 const messages: Message[] = structuredClone(__SNAPSHOT__);
@@ -79,6 +79,14 @@ export const api = {
   },
   remove: notInDemo,
   reorganize: notInDemo,
+  // The photo library reads folders on the visitor's own computer through the server; not part of the demo.
+  photos: {
+    folders: async () => ({ folders: [] }),
+    known: async () => [],
+    add: notInDemo,
+    removeFolder: notInDemo,
+    save: notInDemo,
+  },
   patchItem: async (id: string, patch: { done?: boolean; category?: string }) => {
     const message = messages.find((m) => m.items.some((i) => i.id === id));
     const item = message?.items.find((i) => i.id === id);

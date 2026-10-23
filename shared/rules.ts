@@ -133,8 +133,13 @@ export function classifyWithRules(msg: Message): NewItem[] {
   for (const a of msg.attachments) {
     const ref = { ...base, attachment_id: a.id };
     if (a.kind === "image") {
-      const cat = INSPO_RE.test(caption) || !caption ? "inspiration" : "moment";
-      items.push({ ...ref, category: cat, title: short(caption || a.filename), body: caption });
+      // Text read from the photo (a saved screenshot, a whiteboard) is sorted like the user's own words.
+      const read = a.transcript ? parse(a.transcript).filter((c) => c.kind !== "link").map(itemFor) : [];
+      if (caption || read.length === 0) {
+        const cat = INSPO_RE.test(caption) || !caption ? "inspiration" : "moment";
+        items.push({ ...ref, category: cat, title: short(caption || a.filename), body: caption });
+      } else read[0].attachment_id = a.id;
+      items.push(...read);
     } else if (a.kind === "video") items.push({ ...ref, category: "moment", title: short(caption || a.filename), body: caption });
     else if (a.kind === "audio") {
       // A voice memo is the user's own words: split it like typed text, with the recording on the first item.

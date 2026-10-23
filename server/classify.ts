@@ -53,7 +53,7 @@ async function classifyWithClaude(msg: Message): Promise<NewItem[]> {
 
   msg.attachments.forEach((a, i) => {
     let label = `[attachment:${i}] ${a.kind} "${a.filename}" (${a.mime})`;
-    if (a.transcript) label += `\nVoice memo transcript: ${a.transcript}`;
+    if (a.transcript) label += `\n${a.kind === "audio" ? "Voice memo transcript" : "Text read from the image"}: ${a.transcript}`;
     content.push({ type: "text", text: label });
     const file = storedPath(getStoredName(a.id));
     if (IMAGE_TYPES.has(a.mime) && a.size < 5_000_000) {

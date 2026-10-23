@@ -6,7 +6,9 @@ import type { Template, TemplateSpec } from "../shared/templates.ts";
 
 export const DATA_DIR = path.resolve("data");
 export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+export const THUMB_DIR = path.join(DATA_DIR, "thumbs");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(THUMB_DIR, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_DIR, "braindump.db"));
 db.exec(`
@@ -64,6 +66,30 @@ db.exec(`
     prompt TEXT NOT NULL,
     spec TEXT NOT NULL
   );
+
+  -- Photo library: what the browser read from photos in folders the user gave access to. The originals stay in
+  -- those folders; only a thumbnail is copied here.
+  CREATE TABLE IF NOT EXISTS photos (
+    id TEXT PRIMARY KEY,
+    folder TEXT NOT NULL, -- name of the granted folder
+    path TEXT NOT NULL, -- path inside that folder
+    size INTEGER NOT NULL,
+    modified_at INTEGER NOT NULL,
+    taken_at INTEGER, -- from EXIF, when the photo has it
+    lat REAL,
+    lon REAL,
+    text TEXT NOT NULL DEFAULT '', -- words read from the image (OCR)
+    thumb_name TEXT NOT NULL,
+    indexed_at INTEGER NOT NULL,
+    UNIQUE (folder, path)
+  );
+  -- "Find that screenshot…" messages: the photos found for them, best match first.
+  CREATE TABLE IF NOT EXISTS recalls (
+    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    terms TEXT NOT NULL, -- JSON array of the words searched for
+    photo_ids TEXT NOT NULL, -- JSON array
+    searched INTEGER NOT NULL -- how many photos were searched
+  );
 `);
 
 export const newId = () => crypto.randomUUID();
@@ -95,6 +121,17 @@ export type Item = {
   link_id: string | null;
   done: boolean;
 };
+export type Photo = {
+  id: string;
+  folder: string;
+  path: string;
+  taken_at: number | null;
+  lat: number | null;
+  lon: number | null;
+  text: string;
+  url: string; // thumbnail
+};
+export type Recall = { terms: string[]; photos: Photo[]; searched: number };
 export type Message = {
   id: string;
   created_at: number;
@@ -103,6 +140,7 @@ export type Message = {
   attachments: Attachment[];
   links: Link[];
   items: Item[];
+  recall?: Recall; // set when the message asked to find a photo
 };
 
 type Row = Record<string, any>;
@@ -134,7 +172,14 @@ function hydrate(m: Row): Message {
     link_id: i.link_id,
     done: !!i.done,
   }));
-  return { id: m.id, created_at: m.created_at, text: m.text, status: m.status, attachments, links, items };
+  const message: Message = { id: m.id, created_at: m.created_at, text: m.text, status: m.status, attachments, links, items };
+  const recall = db.prepare("SELECT * FROM recalls WHERE message_id = ?").get(m.id) as Row | undefined;
+  if (recall) {
+    // Photos can be removed from the library after the search; show the ones that are left.
+    const photos = (JSON.parse(recall.photo_ids) as string[]).map(getPhoto).filter((p): p is Photo => p !== null);
+    message.recall = { terms: JSON.parse(recall.terms), photos, searched: recall.searched };
+  }
+  return message;
 }
 
 export function listMessages(conversationId = "main"): Message[] {
@@ -205,6 +250,67 @@ export function existingTopics(): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const r of rows) (out[r.category] ??= []).push(r.topic);
   return out;
+}
+
+// ---------- Photo library ----------
+
+const toPhoto = (r: Row): Photo => ({
+  id: r.id,
+  folder: r.folder,
+  path: r.path,
+  taken_at: r.taken_at,
+  lat: r.lat,
+  lon: r.lon,
+  text: r.text,
+  url: `/thumbs/${r.thumb_name}`,
+});
+
+export function getPhoto(id: string): Photo | null {
+  const row = db.prepare("SELECT * FROM photos WHERE id = ?").get(id) as Row | undefined;
+  return row ? toPhoto(row) : null;
+}
+
+export function listPhotos(): Photo[] {
+  return (db.prepare("SELECT * FROM photos").all() as Row[]).map(toPhoto);
+}
+
+export function photoFolders(): { folder: string; count: number }[] {
+  return db.prepare("SELECT folder, COUNT(*) AS count FROM photos GROUP BY folder ORDER BY folder").all() as { folder: string; count: number }[];
+}
+
+/** "path|size|modified" for every photo already indexed in a folder, so a rescan only reads new or changed files. */
+export function knownPhotoKeys(folder: string): string[] {
+  return (db.prepare("SELECT path, size, modified_at FROM photos WHERE folder = ?").all(folder) as Row[]).map(
+    (r) => `${r.path}|${r.size}|${r.modified_at}`,
+  );
+}
+
+/** Adds a photo, or replaces it if the file changed. Returns the thumbnail it replaced, if any, so it can be deleted. */
+export function upsertPhoto(p: Omit<Photo, "id" | "url"> & { size: number; modified_at: number; thumb_name: string }): string | null {
+  const old = db.prepare("SELECT thumb_name FROM photos WHERE folder = ? AND path = ?").get(p.folder, p.path) as Row | undefined;
+  db.prepare(
+    `INSERT INTO photos (id, folder, path, size, modified_at, taken_at, lat, lon, text, thumb_name, indexed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (folder, path) DO UPDATE SET size = excluded.size, modified_at = excluded.modified_at, taken_at = excluded.taken_at,
+       lat = excluded.lat, lon = excluded.lon, text = excluded.text, thumb_name = excluded.thumb_name, indexed_at = excluded.indexed_at`,
+  ).run(newId(), p.folder, p.path, p.size, p.modified_at, p.taken_at, p.lat, p.lon, p.text, p.thumb_name, Date.now());
+  return old?.thumb_name ?? null;
+}
+
+/** Forgets a folder. Returns its thumbnails so they can be deleted. */
+export function deletePhotoFolder(folder: string): string[] {
+  const thumbs = (db.prepare("SELECT thumb_name FROM photos WHERE folder = ?").all(folder) as Row[]).map((r) => r.thumb_name);
+  db.prepare("DELETE FROM photos WHERE folder = ?").run(folder);
+  return thumbs;
+}
+
+export function saveRecall(messageId: string, terms: string[], photoIds: string[], searched: number) {
+  db.prepare("INSERT OR REPLACE INTO recalls (message_id, terms, photo_ids, searched) VALUES (?, ?, ?, ?)").run(
+    messageId,
+    JSON.stringify(terms),
+    JSON.stringify(photoIds),
+    searched,
+  );
 }
 
 // ---------- Templates ----------

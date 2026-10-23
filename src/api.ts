@@ -1,9 +1,20 @@
 import type { Message } from "../server/db.ts";
 
-export type { Message, Item, Attachment, Link } from "../server/db.ts";
+export type { Message, Item, Attachment, Link, Photo, Recall } from "../server/db.ts";
 export type { Template, TemplateSpec } from "../shared/templates.ts";
 import type { Template } from "../shared/templates.ts";
 export type Pending = { file: File; transcript?: string; preview?: string };
+/** What the browser read from one photo in a granted folder. */
+export type PhotoMeta = {
+  folder: string;
+  path: string;
+  size: number;
+  modified_at: number;
+  taken_at: number | null;
+  lat: number | null;
+  lon: number | null;
+  text: string;
+};
 export type ServerEvent = { type: "message"; message: Message } | { type: "deleted"; id: string };
 
 async function ok(res: Response) {
@@ -42,4 +53,16 @@ export const api = {
   },
   patchItem: (id: string, patch: { done?: boolean; category?: string }) =>
     fetch(`/api/items/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).then(ok),
+  photos: {
+    folders: (): Promise<{ folders: { folder: string; count: number }[] }> => fetch("/api/photos").then((r) => r.json()),
+    known: (folder: string): Promise<string[]> => fetch(`/api/photos/known?folder=${encodeURIComponent(folder)}`).then((r) => r.json()),
+    add: async (meta: PhotoMeta, thumb: Blob) => {
+      const form = new FormData();
+      form.append("meta", JSON.stringify(meta));
+      form.append("thumb", thumb, "thumb.jpg");
+      await ok(await fetch("/api/photos", { method: "POST", body: form }));
+    },
+    removeFolder: (folder: string) => fetch(`/api/photos?folder=${encodeURIComponent(folder)}`, { method: "DELETE" }).then(ok),
+    save: (id: string) => fetch(`/api/photos/${id}/save`, { method: "POST" }).then(ok),
+  },
 };
