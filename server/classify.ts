@@ -23,7 +23,7 @@ const ItemsSchema = z.object({
 const SYSTEM = `You are the organizer inside a braindump app. The user dumps whatever is on their mind into a chat with no one on the other side: notes, to-dos, links, screenshots, photos, voice memos, files. Your job is to turn one message into tidy items for their auto-organized notebook. You never reply to the user.
 
 Categories:
-${CATEGORIES.map((c) => `- ${c.id}: ${c.hint}`).join("\n")}
+${CATEGORIES.map((c) => `- ${c.id}: ${c.hint}. Keywords: ${c.keywords.join(", ")}`).join("\n")}
 
 How to split a message into items:
 - One message can hold several intents. "buy oat milk, call mom, also this site is great https://..." is two todo items and one link item.
