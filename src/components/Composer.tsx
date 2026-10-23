@@ -4,8 +4,16 @@ import { formatSize } from "../format.ts";
 
 type Recording = { recorder: MediaRecorder; recognition: any; startedAt: number; transcript: string };
 
-// Web Speech API: Chrome/Edge/Safari. Used only for a live transcript next to the audio file.
+// Web Speech API (Chrome, Edge, Safari): dictation into the text box, and the transcript of a voice memo.
 const SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+
+const DICTATION_ERRORS: Record<string, string> = {
+  "not-allowed": "Microphone access is blocked. Allow it for this site in your browser, and for your browser in System Settings → Privacy & Security → Microphone.",
+  "service-not-allowed": "Your browser's speech service isn't available here. Try Chrome or Safari, or type instead.",
+  "audio-capture": "No microphone found. Connect one and try again.",
+  network: "Voice input needs an internet connection: the browser sends your speech to its speech service to turn it into text.",
+  "no-speech": "Didn't hear anything. Tap the mic and try again.",
+};
 
 export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDroppedConsumed: () => void }) {
   const [text, setText] = useState("");
@@ -13,6 +21,8 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rec, setRec] = useState<Recording | null>(null);
+  const [listening, setListening] = useState(false);
+  const dictation = useRef<any>(null);
   const [, tick] = useState(0);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -35,6 +45,9 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
     el.style.height = Math.min(el.scrollHeight, 220) + "px";
   }, [text]);
 
+  // Stop listening if the composer goes away mid-dictation.
+  useEffect(() => () => dictation.current?.abort(), []);
+
   // Recording timer.
   useEffect(() => {
     if (!rec) return;
@@ -44,6 +57,7 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
 
   async function send() {
     if (sending || rec || (!text.trim() && pending.length === 0)) return;
+    dictation.current?.stop();
     setSending(true);
     setError(null);
     try {
@@ -59,7 +73,48 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
     }
   }
 
+  /** Voice input: speech is typed into the text box as you talk, so it can be fixed before sending. */
+  function toggleDictation() {
+    if (dictation.current) {
+      dictation.current.stop();
+      return;
+    }
+    setError(null);
+    if (!SpeechRecognition) {
+      setError("Voice input needs Chrome, Edge or Safari. You can still type, or record a voice memo.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = navigator.language || "en-US";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    const before = text.trimEnd(); // keep whatever was typed; speech goes after it
+    recognition.onresult = (e: any) => {
+      const said = Array.from(e.results as ArrayLike<any>)
+        .map((r) => r[0].transcript)
+        .join("")
+        .trim();
+      setText(before && said ? `${before} ${said}` : before || said);
+    };
+    recognition.onerror = (e: any) => {
+      if (e.error !== "aborted") setError(DICTATION_ERRORS[e.error] ?? "Voice input stopped. Try again, or type instead.");
+    };
+    recognition.onend = () => {
+      dictation.current = null;
+      setListening(false);
+      textRef.current?.focus();
+    };
+    try {
+      recognition.start();
+      dictation.current = recognition;
+      setListening(true);
+    } catch {
+      setError("Couldn't start voice input. Try again, or type instead.");
+    }
+  }
+
   async function startRecording() {
+    dictation.current?.stop();
     setError(null);
     // Browsers only allow the microphone on https:// or localhost.
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -88,7 +143,7 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
 
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
-      recognition.lang = navigator.language || "zh-CN";
+      recognition.lang = navigator.language || "en-US";
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.onresult = (e: any) => {
@@ -183,7 +238,7 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
             ref={textRef}
             rows={1}
             value={text}
-            placeholder="Dump anything here… text, links, images, voice"
+            placeholder={listening ? "Listening… your words appear here" : "Dump anything here… text, links, images, voice"}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               // isComposing: don't send while an IME (e.g. pinyin) candidate is being picked.
@@ -200,14 +255,27 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
               }
             }}
           />
-          {/* Shared demo pages run in a sandbox that never grants the microphone, so don't offer it there. */}
+          {/* Shared demo pages run in a sandbox that never grants the microphone, so don't offer voice there. */}
           {!api.demo && (
-            <button className="icon-btn" title="Record a voice memo" onClick={startRecording}>
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0014 0M12 18v3" />
-              </svg>
-            </button>
+            <>
+              <button
+                className={`icon-btn ${listening ? "listening" : ""}`}
+                title={listening ? "Stop voice input" : "Voice input: speak instead of typing"}
+                aria-label={listening ? "Stop voice input" : "Voice input"}
+                aria-pressed={listening}
+                onClick={toggleDictation}
+              >
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0014 0M12 18v3" />
+                </svg>
+              </button>
+              <button className="icon-btn" title="Record a voice memo (keeps the audio)" aria-label="Record a voice memo" onClick={startRecording} disabled={listening}>
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                  <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2" />
+                </svg>
+              </button>
+            </>
           )}
           <button className="send-btn" onClick={send} disabled={sending || (!text.trim() && pending.length === 0)} title="Send (Enter)">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
@@ -216,6 +284,7 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
           </button>
         </div>
       )}
+      {listening && <div className="composer-hint">Listening… speak and your words are typed in. Tap the mic again to stop.</div>}
       {error && <div className="composer-error">{error}</div>}
     </div>
   );
