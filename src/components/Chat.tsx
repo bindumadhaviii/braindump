@@ -57,14 +57,7 @@ export function Chat({ messages, onJumpToItem }: Props) {
           <span className="brand-mark">🧠</span>
           <span>BrainDump</span>
         </div>
-        <span className="chat-header-right">
-          {!api.demo && (
-            <button className="photos-btn" onClick={openPhotos} title="Let BrainDump look through your photos">
-              🖼️ {library.scan ? (library.scan.total ? `Reading ${library.scan.done}/${library.scan.total}` : "Looking…") : "Photos"}
-            </button>
-          )}
-          <span className="chat-count">{messages.length} {messages.length === 1 ? "message" : "messages"}</span>
-        </span>
+        <span className="chat-count">{messages.length} {messages.length === 1 ? "message" : "messages"}</span>
       </header>
 
       <div
@@ -99,7 +92,12 @@ export function Chat({ messages, onJumpToItem }: Props) {
         })}
       </div>
 
-      <Composer dropped={dropped} onDroppedConsumed={() => setDropped([])} />
+      <Composer
+        dropped={dropped}
+        onDroppedConsumed={() => setDropped([])}
+        onOpenPhotos={api.demo ? undefined : openPhotos}
+        scan={library.scan}
+      />
       {dragging && <div className="drop-overlay">Drop to add</div>}
       {photosOpen && <PhotoAccessDialog library={library} onClose={() => setPhotosOpen(false)} />}
     </section>

@@ -1,13 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Pending } from "../api.ts";
 import { formatSize } from "../format.ts";
+import type { Scan } from "./PhotoAccess.tsx";
 
 type Recording = { recorder: MediaRecorder; recognition: any; startedAt: number; transcript: string };
 
 // Web Speech API: Chrome/Edge/Safari. Used only for a live transcript next to the audio file.
 const SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
 
-export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDroppedConsumed: () => void }) {
+type Props = {
+  dropped: File[];
+  onDroppedConsumed: () => void;
+  /** Opens the photo library dialog; without it the paperclip goes straight to the file picker (demo build). */
+  onOpenPhotos?: () => void;
+  scan?: Scan;
+};
+
+export function Composer({ dropped, onDroppedConsumed, onOpenPhotos, scan }: Props) {
+  const [attachOpen, setAttachOpen] = useState(false);
+  const attachRef = useRef<HTMLSpanElement>(null);
   const [text, setText] = useState("");
   const [pending, setPending] = useState<Pending[]>([]);
   const [sending, setSending] = useState(false);
@@ -34,6 +45,19 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 220) + "px";
   }, [text]);
+
+  // Close the attach menu on a click elsewhere or Escape.
+  useEffect(() => {
+    if (!attachOpen) return;
+    const onDown = (e: MouseEvent) => !attachRef.current?.contains(e.target as Node) && setAttachOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setAttachOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [attachOpen]);
 
   // Recording timer.
   useEffect(() => {
@@ -151,6 +175,12 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
         </div>
       )}
 
+      {scan && (
+        <button className="scan-status" onClick={onOpenPhotos} title="Open photo library">
+          🖼️ {scan.total ? `Reading photos in “${scan.folder}”: ${scan.done} of ${scan.total}` : `Looking in “${scan.folder}”…`}
+        </button>
+      )}
+
       {rec ? (
         <div className="recording">
           <span className="rec-dot" />
@@ -164,11 +194,48 @@ export function Composer({ dropped, onDroppedConsumed }: { dropped: File[]; onDr
         </div>
       ) : (
         <div className="composer-row">
-          <button className="icon-btn" title="Add images, videos or files" onClick={() => fileRef.current?.click()}>
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-              <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9" />
-            </svg>
-          </button>
+          <span className="attach" ref={attachRef}>
+            <button
+              className="icon-btn"
+              title={onOpenPhotos ? "Attach files or open your photo library" : "Add images, videos or files"}
+              aria-expanded={onOpenPhotos ? attachOpen : undefined}
+              onClick={() => (onOpenPhotos ? setAttachOpen((o) => !o) : fileRef.current?.click())}
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                <path d="M21 11.5l-8.6 8.6a5.5 5.5 0 01-7.8-7.8l8.6-8.6a3.7 3.7 0 015.2 5.2l-8.6 8.6a1.8 1.8 0 01-2.6-2.6l7.9-7.9" />
+              </svg>
+            </button>
+            {attachOpen && onOpenPhotos && (
+              <span className="attach-menu" role="menu">
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachOpen(false);
+                    fileRef.current?.click();
+                  }}
+                >
+                  <span className="attach-icon">📎</span>
+                  <span>
+                    <strong>Attach files</strong>
+                    <small>Images, videos or files for this message</small>
+                  </span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachOpen(false);
+                    onOpenPhotos();
+                  }}
+                >
+                  <span className="attach-icon">🖼️</span>
+                  <span>
+                    <strong>Photo library</strong>
+                    <small>Give full or limited access so you can ask for photos later</small>
+                  </span>
+                </button>
+              </span>
+            )}
+          </span>
           <input
             ref={fileRef}
             type="file"
