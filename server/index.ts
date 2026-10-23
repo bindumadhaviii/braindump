@@ -47,9 +47,12 @@ async function organize(id: string) {
   try {
     const msg = db.getMessage(id);
     if (!msg) return;
-    if (isRecallQuery(msg.text) && msg.attachments.length === 0) {
+    // A question can be typed or spoken: a voice memo alone counts by its transcript.
+    const voiceOnly = msg.attachments.length > 0 && msg.attachments.every((a) => a.kind === "audio");
+    const asked = [msg.text, ...(voiceOnly ? msg.attachments.map((a) => a.transcript ?? "") : [])].join(" ").trim();
+    if (isRecallQuery(asked) && (msg.attachments.length === 0 || voiceOnly)) {
       // "Can you find that screenshot…": answer from the photo library instead of filing it as a note.
-      const terms = recallTerms(msg.text);
+      const terms = recallTerms(asked);
       const photos = db.listPhotos();
       db.saveRecall(id, terms, searchPhotos(photos, terms).map((m) => m.photo.id), photos.length);
       db.replaceItems(id, []);
