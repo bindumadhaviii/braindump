@@ -1,8 +1,19 @@
 // Rule-based categorizer: used when there's no API key or the Claude call fails, and by the static demo build
 // (which runs in the browser), so it must stay free of server-only imports.
 import type { Item, Message } from "../server/db.ts";
+import { CATEGORIES, type CategoryId } from "./categories.ts";
 
 export type NewItem = Omit<Item, "id" | "done">;
+
+// One regex per category from its keywords; whole words, plurals allowed ("meetings"), "call up" matches "call  up".
+const KEYWORD_RE = Object.fromEntries(
+  CATEGORIES.map((c) => [
+    c.id,
+    new RegExp(String.raw`\b(?:${c.keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, String.raw`\s+`)).join("|")})(?:s|es)?\b`, "gi"),
+  ]),
+) as Record<CategoryId, RegExp>;
+/** How many of a category's keywords appear in the text. */
+const keywordHits = (id: CategoryId, text: string) => text.match(KEYWORD_RE[id])?.length ?? 0;
 
 const URL_RE = /https?:\/\/[^\s<>"'，。！？、）)\]]+/gi;
 
@@ -83,6 +94,19 @@ function clauses(text: string): string[] {
 
 type Clause = { kind: "todo" | "idea" | "note" | "link"; text: string; urls: string[] };
 
+/**
+ * Last resort for a clause none of the patterns above caught: whichever of to-do / idea / note keywords it mentions
+ * most, with ties going to note. Past tense rules out a to-do ("Meetings were tiring" is not a task).
+ */
+function byKeywords(c: string): "todo" | "idea" | "note" {
+  const todo = PAST_RE.test(c) ? 0 : keywordHits("todo", c);
+  const idea = keywordHits("idea", c);
+  const note = keywordHits("note", c);
+  if (todo > note && todo >= idea) return "todo";
+  if (idea > note) return "idea";
+  return "note";
+}
+
 function parse(text: string): Clause[] {
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   // A "To do tomorrow:" / "Shopping list:" header → every line under it is a to-do.
@@ -95,7 +119,7 @@ function parse(text: string): Clause[] {
     if (/^\s*(?:idea:|what if)/i.test(c)) return { kind: "idea", text: c, urls: [] };
     if (isTask(c)) return { kind: "todo", text: c, urls: [] };
     if (IDEA_RE.test(c)) return { kind: "idea", text: c, urls: [] };
-    return { kind: "note", text: c, urls: [] };
+    return { kind: byKeywords(c), text: c, urls: [] };
   });
   // Neighbouring note clauses are one thought, and sentences after an idea keep elaborating it unless they open a
   // new one ("Idea: …", "What if …").
@@ -133,10 +157,12 @@ export function classifyWithRules(msg: Message): NewItem[] {
   for (const a of msg.attachments) {
     const ref = { ...base, attachment_id: a.id };
     if (a.kind === "image") {
-      // Text read from the photo (a saved screenshot, a whiteboard) is sorted like the user's own words.
+      // Text read from the photo (a saved screenshot, a whiteboard) is sorted like the user's own words. With a
+      // caption, the photo itself is still filed by the caption's keywords and the text is sorted alongside it.
       const read = a.transcript ? parse(a.transcript).filter((c) => c.kind !== "link").map(itemFor) : [];
       if (caption || read.length === 0) {
-        const cat = INSPO_RE.test(caption) || !caption ? "inspiration" : "moment";
+        const inspo = !caption || INSPO_RE.test(caption) || keywordHits("inspiration", caption) > keywordHits("moment", caption);
+        const cat = inspo ? "inspiration" : "moment";
         items.push({ ...ref, category: cat, title: short(caption || a.filename), body: caption });
       } else read[0].attachment_id = a.id;
       items.push(...read);
