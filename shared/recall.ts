@@ -18,7 +18,7 @@ const STOP = new Set(
     "look looking find finding search searching pull dig check tell show remember remembered recall think thought know " +
     "taking took take taken saving saved save snapped snapping screenshot screenshots screenshotted photo photos picture " +
     "pictures pic pics image images gallery camera roll name one once went go going been based sure kind sort get got " +
-    "want wanted need later explore again maybe"
+    "want wanted need later explore again maybe someone somewhere everywhere anywhere posted up"
   ).split(" "),
 );
 
@@ -37,12 +37,13 @@ const RELATED: string[][] = [
   ["recipe", "ingredient", "cook", "bake", "oven"],
   ["receipt", "total", "order", "paid", "invoice"],
   ["todo", "task", "checklist", "deadline"],
+  ["book", "read", "reading", "author", "novel"],
   ["event", "ticket", "concert", "show", "rsvp"],
 ];
 
-/** Lower-case, drop possessives and plural endings, so "Squats" matches "squat". */
+/** Lower-case, drop possessives, hyphens and plural endings, so "Squats" matches "squat" and "To-do" matches "todo". */
 export function stem(word: string): string {
-  let w = word.toLowerCase().replace(/[’']s$/, "").replace(/[’']/g, "");
+  let w = word.toLowerCase().replace(/[’']s$/, "").replace(/[’'-]/g, "");
   if (w.length > 4 && w.endsWith("ies")) w = w.slice(0, -3) + "y";
   else if (w.length > 3 && w.endsWith("s") && !w.endsWith("ss")) w = w.slice(0, -1);
   return w;
@@ -74,8 +75,7 @@ export type Match = { photo: Photo; score: number };
 
 /**
  * Ranks photos by how well their text matches the terms. Rare words count more than common ones (so "hackathon"
- * outweighs "day"), a related word counts half when no photo has the word itself, and two terms side by side
- * ("leg day") get a bonus.
+ * outweighs "day"), a related word counts half, and two terms side by side ("leg day") get a bonus.
  */
 export function searchPhotos(photos: Photo[], terms: string[], limit = 6): Match[] {
   if (!terms.length || !photos.length) return [];
@@ -84,15 +84,17 @@ export function searchPhotos(photos: Photo[], terms: string[], limit = 6): Match
     return { photo: p, set: new Set(ws), joined: ` ${ws.join(" ")} ` };
   });
   const idf = (w: string) => Math.log(1 + docs.length / (1 + docs.filter((d) => d.set.has(w)).length));
-  // Related words only stand in for a term no photo contains: if one says "hackathon", "pitch" is just noise.
+  // A related word backs up a photo that already matches another term exactly, or stands in for a term no photo
+  // contains. On its own it's noise: if one photo says "hackathon", another that only says "pitch" isn't a match.
   const exact = new Set(terms.filter((t) => docs.some((d) => d.set.has(t))));
 
   const matches: Match[] = [];
   for (const d of docs) {
     let score = 0;
+    const matchesExactly = terms.some((t) => d.set.has(t));
     for (const t of terms) {
       if (d.set.has(t)) score += idf(t);
-      else if (!exact.has(t)) {
+      else if (matchesExactly || !exact.has(t)) {
         const rel = [...(relatedTo.get(t) ?? [])].find((r) => d.set.has(r));
         if (rel) score += 0.5 * idf(rel);
       }
